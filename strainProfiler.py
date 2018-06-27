@@ -149,94 +149,64 @@ def _parse_Sdb(sdb):
                         sdb['A'], sdb['C'], sdb['T'], sdb['G'], sdb['refBase'], sdb['baseCoverage'])]
     return sdb
 
-def profile_bam(bam, **kwargs):
+def _update_cov_table(table, covs, lengt, scaff):
     '''
-    Return a dataframe with the complete coverage exhaustion of each scaffold
+    Add information to the table
 
-    If profileANI, also find SNPs and report consensus ANI (slower)
-
-    Return Bdb, Sdb (Sdb will be blank if not profileANI)
+    Args:
+        table: table to add to
+        covs: list of coverage values
+        lengt: length of scaffold
+        scaff: name of scaffold
     '''
-    # get arguments
-    fasta = kwargs.get('fasta', None)
-    profileANI = kwargs.get('profileANI', True)
-    minP = kwargs.get('minP', .8)
-    minC = kwargs.get('minC', 5)
+    nonzeros = len(covs)
+    zeros = (lengt - len(covs))
+    covs = covs + ([0] * (lengt - len(covs)))
 
-    # set up coverage dataframe
-    table = defaultdict(list)
-    Stable = False
+    assert len(covs) == lengt, [covs, lengt]
 
-    # set up .sam file
-    samfile = pysam.AlignmentFile(bam)
+    # fill in all coverage information
+    table['scaffold'].append(scaff)
+    table['length'].append(lengt)
+    table['breadth'].append(nonzeros/lengt)
+    table['coverage'].append(np.mean(covs))
+    table['median_cov'].append(int(np.median(covs)))
+    table['std_cov'].append(np.std(covs))
+    table['bases_w_0_coverage'].append(zeros)
+    table['max_cov'].append(max(covs))
+    table['min_cov'].append(min(covs))
 
-    # set up .fasta file
-    if profileANI:
-        scaff2sequence = SeqIO.to_dict(SeqIO.parse(fasta, "fasta"))
-        Stable = defaultdict(list) # Set up SNP table
+def _update_snp_table(Stable, basesCounted, snpsCounted, refBase, counts,\
+        pos, scaff, minC=5, minP=.8):
+    '''
+    Add information to SNP table
+    '''
 
-    # Get scaffold2length from .bam file
-    s2l = {}
-    for dic in samfile.header['SQ']:
-        s2l[dic['SN']] = dic['LN']
+    snp = _call_SNP(counts, refBase, minC, minP) # Call SNP
+    if snp == 2: # means base was not counted
+       return snpsCounted, basesCounted
 
-    # Iterate scaffolds
-    for scaff in tqdm(s2l, desc='Scaffolds processed'):
-        covs = [] # List of coverage values for this scaffold
-        if profileANI:
-            scaffSeq = scaff2sequence[scaff] # Dictionary of scaffold to seqIO object
-            basesCounted = 0 # Count of bases that got through to SNP calling
-            snpsCounted = 0 # Count of SNPs
+    elif snp == 1: # means this is a SNP
+       Stable['scaffold'].append(scaff)
+       Stable['position'].append(pos)
+       Stable['refBase'].append(refBase)
+       for b, c in zip(['A', 'C', 'T', 'G'], counts):
+           Stable[b].append(c)
+       snpsCounted += 1
+       
+    basesCounted += 1 # count everything that's not counted
+    return snpsCounted, basesCounted
 
-        for pileupcolumn in samfile.pileup(scaff):
-            if profileANI:
-                # Iterate reads at this position to figure out basecounts
-                counts = _get_base_counts(pileupcolumn)
-                baseCoverage = sum(counts) # Determine base coverage (this one does NOT include N or indels)
-                covs.append(baseCoverage)
+def _update_snp_cov_table(table, snpsCounted, basesCounted, lengt):
+    # fill in all SNP information
+    table['SNPs'].append(snpsCounted)
+    table['unmaskedBreadth'].append(basesCounted / lengt)
+    if basesCounted == 0:
+        table['ANI'].append(0)
+    else:
+        table['ANI'].append((basesCounted - snpsCounted)/ basesCounted)
 
-                refBase = scaffSeq[pileupcolumn.pos] # Determine reference base
-                snp = _call_SNP(counts, refBase, minC, minP) # Call SNP
-                if snp == 2: # means base was not counted
-                    continue
-
-                elif snp == 1: # means this is a SNP
-                    Stable['scaffold'].append(scaff)
-                    Stable['position'].append(pileupcolumn.pos)
-                    Stable['refBase'].append(refBase)
-                    for b, c in zip(['A', 'C', 'T', 'G'], counts):
-                        Stable[b].append(c)
-                    snpsCounted += 1
-                basesCounted += 1
-
-            else: # Just determine the coverage - THIS WILL COUNT READS WITH N or INDEL
-                covs.append(pileupcolumn.n)
-
-        # backfill coverage with 0s to account for those with no reads mapping
-        zeros = len(covs)
-        covs = covs + ([0] * (s2l[scaff] - len(covs)))
-        assert len(covs) == s2l[scaff], [covs, s2l[scaff]]
-
-        # fill in all coverage information
-        table['scaffold'].append(scaff)
-        table['length'].append(s2l[scaff])
-        table['breadth'].append(zeros/s2l[scaff])
-        table['coverage'].append(np.mean(covs))
-        table['median_cov'].append(int(np.median(covs)))
-        table['std_cov'].append(np.std(covs))
-        table['bases_w_0_coverage'].append(zeros)
-        table['max_cov'].append(max(covs))
-        table['min_cov'].append(min(covs))
-
-        # fill in all SNP information
-        table['SNPs'].append(snpsCounted)
-        table['unmaskedBreadth'].append(basesCounted / s2l[scaff])
-        if basesCounted == 0:
-            table['ANI'].append(0)
-        else:
-            table['ANI'].append((basesCounted - snpsCounted)/ basesCounted)
-
-    Cdb = pd.DataFrame(table)
+def _make_snp_table(Stable):
     if Stable != False:
         try:
             Sdb = pd.DataFrame(Stable)
@@ -247,6 +217,56 @@ def profile_bam(bam, **kwargs):
             Sdb = None
     else:
         Sdb = None
+
+    return Sdb
+
+def profile_bam(bam, fasta, **kwargs):
+    '''
+    Return a dataframe with the complete coverage exhaustion of each scaffold
+
+    Bdb = coverage information on all scaffolds
+    Sdb = SNP information
+
+    Return Bdb, Sdb
+    '''
+    # get arguments
+    minP = kwargs.get('minP', .8)
+    minC = kwargs.get('minC', 5)
+
+    # initialize
+    table = defaultdict(list) # set up coverage dataframe
+    Stable = defaultdict(list) # Set up SNP table
+    samfile = pysam.AlignmentFile(bam) # set up .sam file
+    scaff2sequence = SeqIO.to_dict(SeqIO.parse(fasta, "fasta")) # set up .fasta file
+    s2l = {s:len(scaff2sequence[s]) for s in list(scaff2sequence.keys())} # Get scaffold2length
+
+    # Iterate scaffolds
+    for scaff in tqdm(s2l, desc='Scaffolds processed'):
+        covs = [] # List of coverage values for this scaffold
+        basesCounted = 0 # Count of bases that got through to SNP calling
+        snpsCounted = 0 # Count of SNPs
+
+        for pileupcolumn in samfile.pileup(scaff):
+            # Iterate reads at this position to figure out basecounts
+            counts = _get_base_counts(pileupcolumn)
+            MMcounts = _get_base_counts_mm(pileupcolumn)
+
+            covs.append(sum(counts)) # Determine coverage of this base (this one does NOT include N or indels)
+
+            # Call SNPs
+            snpsCounted, basesCounted = _update_snp_table(Stable, basesCounted,\
+                    snpsCounted, scaff2sequence[scaff][pileupcolumn.pos], counts,\
+                    pileupcolumn.pos, scaff, minC=minC, minP=minP)
+
+        # Update coverage table
+        _update_cov_table(table, covs, s2l[scaff], scaff)
+        # Update SNP table
+        _update_snp_cov_table(table, snpsCounted, basesCounted, s2l[scaff])
+
+    # Make coverage table
+    Cdb = pd.DataFrame(table)
+    # Maks SNP table
+    Sdb = _make_snp_table(Stable)
 
     return Cdb, Sdb
 
@@ -263,6 +283,22 @@ def _get_base_counts(pileupcolumn):
             except KeyError: # This would be like an N or something not A/C/T/G
                 pass
     return counts
+
+P2C = {'A':0, 'C':1, 'T':2, 'G':3}
+def _get_base_counts_mm(pileupcolumn):
+    '''
+    From a pileupcolumn object, return a dictionary of readMismatches ->
+        list with the counts of [A, C, T, G]
+    '''
+    table = defaultdict(lambda:[0,0,0,0])
+    for pileupread in pileupcolumn.pileups:
+        if not pileupread.is_del and not pileupread.is_refskip:
+            try:
+                table[pileupread.alignment.get_tag('NM')]\
+                [P2C[pileupread.alignment.query_sequence[pileupread.query_position]]] += 1
+            except KeyError: # This would be like an N or something not A/C/T/G
+                pass
+    return table
 
 def _call_SNP(counts, base, minC=5, minP=0.8):
     '''

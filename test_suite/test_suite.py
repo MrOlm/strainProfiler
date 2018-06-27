@@ -57,6 +57,10 @@ class test_strainProfiler_pile():
         self.test2()
         self.tearDown()
 
+        self.setUp()
+        self.test3()
+        self.tearDown()
+
     def test1(self):
         '''
         Basic comprehensive test of values
@@ -93,7 +97,8 @@ class test_strainProfiler_pile():
         for scaff, db in Odb.groupby('scaffold'):
             if scaff not in s2a:
                 continue
-            assert (db['ANI'].tolist()[0] - s2a[scaff]) <= 0, [scaff, db['ANI'].tolist()[0], s2a[scaff]]
+            assert (db['ANI'].tolist()[0] - s2a[scaff]) <= 0, \
+                [scaff, db['ANI'].tolist()[0], s2a[scaff]]
 
     def test2(self):
         '''
@@ -228,6 +233,6 @@ class test_strainProfiler_breadth():
         assert len(db) == 897
 
 if __name__ == '__main__':
-    test_strainProfiler_breadth().run()
+    #test_strainProfiler_breadth().run()
     test_strainProfiler_pile().run()
     print('everything is working swimmingly!')
