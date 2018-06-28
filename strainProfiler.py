@@ -59,7 +59,7 @@ class Controller():
 
         else:
             bam = args.get('b')
-            if os.path.exists(bam + '.bai'):
+            if (os.path.exists(bam + '.bai')) | ((os.path.exists(bam[:-4] + '.bai'))):
                 pass
             else:
                 bam = _sort_index_bam(bam, rm_ori=False)

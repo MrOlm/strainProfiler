@@ -133,6 +133,10 @@ class test_strainProfiler_pile():
 
         _internal_verify_Sdb(Odb)
 
+        # Make sure all scaffolds are there for each mm
+        times = list(dict(Odb['scaffold'].value_counts()).values())
+        assert len(set(times)) == 1, set(times)
+
         # Ensure internal consistancy between Sdb and Cdb
         low_mm = Sdb['mm'].min()
         for scaff, db in Sdb[Sdb['mm'] == low_mm].groupby('scaffold'):
