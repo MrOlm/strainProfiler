@@ -34,6 +34,8 @@ class test_strainProfiler_pile():
             'N5_271_010G1_scaffold_min1000.fa-vs-N5_271_010G1.sorted.bam'
         self.fasta = load_data_loc() + \
             'N5_271_010G1_scaffold_min1000.fa'
+        self.single_scaff = load_data_loc() + \
+            'N5_271_010G1_scaffold_101.fasta'
         self.cc_solution = load_data_loc() + \
             'N5_271_010G1_scaffold_min1000.fa-vs-N5_271_010G1.bam.CB'
         self.pp_solution = load_data_loc() + \
@@ -41,6 +43,7 @@ class test_strainProfiler_pile():
         self.test_dir = load_random_test_dir()
 
         if os.path.isdir(self.test_dir):
+            pass
             shutil.rmtree(self.test_dir)
         os.mkdir(self.test_dir)
 
@@ -49,6 +52,10 @@ class test_strainProfiler_pile():
             shutil.rmtree(self.test_dir)
 
     def run(self):
+        self.setUp()
+        self.test0()
+        self.tearDown()
+
         self.setUp()
         self.test1()
         self.tearDown()
@@ -61,9 +68,58 @@ class test_strainProfiler_pile():
         self.test3()
         self.tearDown()
 
+    def test0(self):
+        '''
+        SUPER FAST basic comprehensive test of values; just one scaffold
+
+        (updated only to test full mm)
+        '''
+        # Run program
+        fasta = load_data_loc() + 'N5_271_010G1_scaffold_1.fasta'
+        out_base = os.path.join(self.test_dir, 'test')
+        cmd = [self.script, '-b', self.bam, '-o', out_base, '-f', fasta]
+        call(cmd)
+
+        # Load output
+        Odb = pd.read_csv(out_base + '_scaffoldTable.csv')
+        Sdb = pd.read_pickle(out_base + '_snpLocations.pickle')
+        assert os.path.isfile(out_base + '_log')
+
+        # Ensure internal consistancy of Sdb and Cdb
+        _internal_verify_Sdb(Odb)
+
+        low_mm = Sdb['mm'].min()
+        for scaff, db in Sdb[Sdb['mm'] == low_mm].groupby('scaffold'):
+            snps = Odb['SNPs'][(Odb['scaffold'] == scaff) & (Odb['mm'] \
+                    == low_mm)].fillna(0).tolist()[0]
+            assert snps == len(db), [snps, len(db)]
+
+        # Compare to calculate_coverage
+        Cdb = pd.read_csv(self.cc_solution)
+        s2c = Cdb.set_index('scaffold')['coverage'].to_dict()
+        s2b = Cdb.set_index('scaffold')['breadth'].to_dict()
+        for scaff, db in Odb.groupby('scaffold'):
+            db = db.sort_values('mm', ascending=False)
+            assert (db['coverage'].tolist()[0] - s2c[scaff]) < .1, [db['coverage'].tolist()[0], s2c[scaff]]
+            assert (db['breadth'].tolist()[0] - s2b[scaff]) < .01, [db['breadth'].tolist()[0], s2b[scaff]]
+
+        # Compare to pileupProfile
+        Pdb = pd.read_csv(self.pp_solution)
+        Pdb['scaffold'] = [x[1:-3] for x in Pdb['genome']]
+        Pdb['consensus_ANI'] = [0 if x != x else x for x in Pdb['consensus_ANI']]
+        s2a = Pdb.set_index('scaffold')['consensus_ANI'].to_dict()
+        for scaff, db in Odb.groupby('scaffold'):
+            db = db.sort_values('mm', ascending=False)
+            if scaff not in s2a:
+                continue
+            assert (db['ANI'].tolist()[0] - s2a[scaff]) <= .0, \
+                [scaff, db['ANI'].tolist()[0], s2a[scaff]]
+
     def test1(self):
         '''
         Basic comprehensive test of values
+
+        (updated only to test full mm)
         '''
         # Run program
         out_base = os.path.join(self.test_dir, 'test')
@@ -75,10 +131,13 @@ class test_strainProfiler_pile():
         Sdb = pd.read_pickle(out_base + '_snpLocations.pickle')
         assert os.path.isfile(out_base + '_log')
 
-        # Ensure internal consistancy
-        assert Odb['ANI'].max() <= 1
-        for scaff, db in Sdb.groupby('scaffold'):
-            snps = Odb['SNPs'][Odb['scaffold'] == scaff].tolist()[0]
+        _internal_verify_Sdb(Odb)
+
+        # Ensure internal consistancy between Sdb and Cdb
+        low_mm = Sdb['mm'].min()
+        for scaff, db in Sdb[Sdb['mm'] == low_mm].groupby('scaffold'):
+            snps = Odb['SNPs'][(Odb['scaffold'] == scaff) & (Odb['mm'] \
+                    == low_mm)].fillna(0).tolist()[0]
             assert snps == len(db), [snps, len(db)]
 
         # Compare to calculate_coverage
@@ -86,19 +145,26 @@ class test_strainProfiler_pile():
         s2c = Cdb.set_index('scaffold')['coverage'].to_dict()
         s2b = Cdb.set_index('scaffold')['breadth'].to_dict()
         for scaff, db in Odb.groupby('scaffold'):
+            db = db.sort_values('mm', ascending=False)
             assert (db['coverage'].tolist()[0] - s2c[scaff]) < .1, [db['coverage'].tolist()[0], s2c[scaff]]
-            assert db['breadth'].tolist()[0] == s2b[scaff]
+            assert (db['breadth'].tolist()[0] - s2b[scaff]) < .01, [db['breadth'].tolist()[0], s2b[scaff]]
 
         # Compare to pileupProfile
         Pdb = pd.read_csv(self.pp_solution)
         Pdb['scaffold'] = [x[1:-3] for x in Pdb['genome']]
         Pdb['consensus_ANI'] = [0 if x != x else x for x in Pdb['consensus_ANI']]
         s2a = Pdb.set_index('scaffold')['consensus_ANI'].to_dict()
+
         for scaff, db in Odb.groupby('scaffold'):
+            db = db.sort_values('mm', ascending=False)
             if scaff not in s2a:
                 continue
-            assert (db['ANI'].tolist()[0] - s2a[scaff]) <= 0, \
-                [scaff, db['ANI'].tolist()[0], s2a[scaff]]
+            #print(db.head(1))
+            # print(s2a[scaff])
+            for val in ['ANI', 'unmaskedBreadth']:
+                assert (db['ANI'].tolist()[0] - s2a[scaff]) <= .01, \
+                    [val, scaff, db['ANI'].tolist()[0], s2a[scaff],\
+                    db.head(1), Pdb[Pdb['scaffold'] == scaff]]
 
     def test2(self):
         '''
@@ -125,6 +191,57 @@ class test_strainProfiler_pile():
 
         assert SD['baseCoverage'].min() == 5, SD['baseCoverage'].min()
         assert abs(SA['baseCoverage'].min() - 10) <= 1, SA['baseCoverage'].min()
+
+    def test3(self):
+        '''
+        Test the edge cases where only one scaffold in the .bam is present
+        AND it has no SNPs
+        '''
+        # Run program
+        out_base = os.path.join(self.test_dir, 'test')
+        cmd = [self.script, '-b', self.bam, '-o', out_base, '-f', self.single_scaff]
+        call(cmd)
+
+        # Load output
+        Odb = pd.read_csv(out_base + '_scaffoldTable.csv')
+        assert not os.path.exists(out_base + '_snpLocations.pickle')
+        assert os.path.isfile(out_base + '_log')
+
+        # Ensure internal consistancy of Sdb
+        assert Odb['ANI'].max() <= 1
+
+        # Compare to calculate_coverage
+        Cdb = pd.read_csv(self.cc_solution)
+        s2c = Cdb.set_index('scaffold')['coverage'].to_dict()
+        s2b = Cdb.set_index('scaffold')['breadth'].to_dict()
+        for scaff, db in Odb.groupby('scaffold'):
+            db = db.sort_values('mm', ascending=False)
+            assert (db['coverage'].tolist()[0] - s2c[scaff]) < .1, [db['coverage'].tolist()[0], s2c[scaff]]
+            assert (db['breadth'].tolist()[0] - s2b[scaff]) < .01, [db['breadth'].tolist()[0], s2b[scaff]]
+
+        # Compare to pileupProfile
+        Pdb = pd.read_csv(self.pp_solution)
+        Pdb['scaffold'] = [x[1:-3] for x in Pdb['genome']]
+        Pdb['consensus_ANI'] = [0 if x != x else x for x in Pdb['consensus_ANI']]
+        s2a = Pdb.set_index('scaffold')['consensus_ANI'].to_dict()
+
+        for scaff, db in Odb.groupby('scaffold'):
+            db = db.sort_values('mm', ascending=False)
+            if scaff not in s2a:
+                continue
+            assert (db['ANI'].tolist()[0] - s2a[scaff]) <= .0, \
+                [scaff, db['ANI'].tolist()[0], s2a[scaff]]
+
+def _internal_verify_Sdb(Sdb):
+    assert len(Sdb) == len(Sdb.dropna())
+
+    for i, row in Sdb.iterrows():
+        if row['SNPs'] > 0:
+            assert row['ANI'] != 0
+
+    assert Sdb['ANI'].max() <= 1
+    assert Sdb['unmaskedBreadth'].max() <= 1
+    assert Sdb['breadth'].max() <= 1
 
 class test_strainProfiler_breadth():
     def setUp(self):

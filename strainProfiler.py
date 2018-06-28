@@ -176,35 +176,119 @@ def _update_cov_table(table, covs, lengt, scaff):
     table['max_cov'].append(max(covs))
     table['min_cov'].append(min(covs))
 
-def _update_snp_table(Stable, basesCounted, snpsCounted, refBase, counts,\
+def _update_covT_table(table, covT, lengt, scaff, debug=False):
+    '''
+    Add information to the table
+
+    Args:
+        table: table to add to
+        covs: list of coverage values
+        lengt: length of scaffold
+        scaff: name of scaffold
+    '''
+    for mm in sorted(list(covT.keys())):
+        covs = _mm_counts_to_counts(covT, mm)
+        if covs == [0,0,0,0]:
+            covs = [0]*lengt
+        nonzeros = np.count_nonzero(covs)
+        zeros = lengt - nonzeros
+
+        assert len(covs) == lengt, [covs, lengt, mm]
+
+        # fill in all coverage information
+        table['scaffold'].append(scaff)
+        table['length'].append(lengt)
+        table['breadth'].append(nonzeros/lengt)
+        table['coverage'].append(np.mean(covs))
+        table['median_cov'].append(int(np.median(covs)))
+        table['std_cov'].append(np.std(covs))
+        table['bases_w_0_coverage'].append(zeros)
+        table['max_cov'].append(max(covs))
+        table['min_cov'].append(min(covs))
+        table['mm'].append(mm)
+
+    if debug == True:
+        covs = _mm_counts_to_counts(covT, max(list(covT.keys())))
+        zero_pos = [i+1 for i,x in enumerate(covs) if x==0]
+        print(zero_pos)
+        print(len(zero_pos))
+
+def _update_snp_table_T(Stable, basesCounted, snpsCounted, refBase, MMcounts,\
         pos, scaff, minC=5, minP=.8):
     '''
     Add information to SNP table
     '''
+    x = _mm_counts_to_counts(MMcounts)
+    #print("inner type: {0}".format(type(x)))
+    #print("mms to check: " + str(sorted(list(MMcounts.keys()))))
+    for mm in list(MMcounts.keys()):
+        #print('checking {0}'.format(mm))
+        counts = _mm_counts_to_counts(MMcounts, mm)
+        #print("iii type: {0}".format(type(counts)))
+        snp = _call_SNP(counts, refBase, minC, minP) # Call SNP
 
-    snp = _call_SNP(counts, refBase, minC, minP) # Call SNP
-    if snp == 2: # means base was not counted
-       return snpsCounted, basesCounted
+        #print(type(counts))
+        #print("pos {0} has {1} cov at {2}mm and is SNP-type {3}".format(pos, counts.sum(), mm, snp))
+        #print(counts)
 
-    elif snp == 1: # means this is a SNP
-       Stable['scaffold'].append(scaff)
-       Stable['position'].append(pos)
-       Stable['refBase'].append(refBase)
-       for b, c in zip(['A', 'C', 'T', 'G'], counts):
-           Stable[b].append(c)
-       snpsCounted += 1
-       
-    basesCounted += 1 # count everything that's not counted
-    return snpsCounted, basesCounted
+        if snp == 2: # means base was not counted
+           continue
 
-def _update_snp_cov_table(table, snpsCounted, basesCounted, lengt):
-    # fill in all SNP information
-    table['SNPs'].append(snpsCounted)
-    table['unmaskedBreadth'].append(basesCounted / lengt)
-    if basesCounted == 0:
-        table['ANI'].append(0)
+        elif snp == 1: # means this is a SNP
+           Stable['scaffold'].append(scaff)
+           Stable['position'].append(pos)
+           Stable['refBase'].append(refBase)
+           for b, c in zip(['A', 'C', 'T', 'G'], counts):
+               Stable[b].append(c)
+           Stable['mm'].append(mm)
+
+           snpsCounted[mm] += 1
+
+        #print("{0} is True".format(pos))
+        basesCounted[mm][pos] = True # count everything that's not skipped
+
+def _calc_counted_bases(basesCounted, maxMM):
+    counts = None
+    for mm, count in [(mm, count) for mm, count in basesCounted.items() if mm <= maxMM]:
+        if counts is None:
+            counts = count
+        else:
+            counts = np.add(counts, count)
+
+    if counts is None:
+        return 0
+
     else:
-        table['ANI'].append((basesCounted - snpsCounted)/ basesCounted)
+        return counts.sum()
+
+def _update_snp_covT_table(table, snpsCounted, basesCounted, lengt, scaff, covT,
+            minCov):
+    # fill in all SNP information
+    for mm in sorted(list(covT.keys())):
+        covs = _mm_counts_to_counts(covT, mm)
+        if covs == [0,0,0,0]:
+            counted_basesO = 0
+        else:
+            zeros = (covs < minCov).sum()
+            counted_basesO = lengt - zeros
+
+        counted_snps = sum([snpsCounted[m] for m in list(snpsCounted.keys())\
+            if m <= mm])
+        counted_bases = _calc_counted_bases(basesCounted, mm)
+
+        # print(basesCounted[mm])
+        # print(len(basesCounted[mm]))
+        # print(basesCounted[mm].sum())
+        # print(counted_bases, counted_basesO)
+
+        table['scaffold'].append(scaff)
+        table['mm'].append(mm)
+        table['SNPs'].append(counted_snps)
+        table['unmaskedBreadth'].append(counted_bases / lengt)
+        if counted_bases == 0:
+            table['ANI'].append(0)
+        else:
+            table['ANI'].append((counted_bases - counted_snps)/ counted_bases)
 
 def _make_snp_table(Stable):
     if Stable != False:
@@ -212,13 +296,110 @@ def _make_snp_table(Stable):
             Sdb = pd.DataFrame(Stable)
             Sdb['scaffold'] = Sdb['scaffold'].astype('category')
             Sdb['refBase'] = Sdb['refBase'].astype('category')
-        except TypeError:
+        except KeyError:
             print("No SNPs detected!")
-            Sdb = None
+            Sdb = pd.DataFrame()
     else:
-        Sdb = None
+        Sdb = pd.DataFrame()
 
     return Sdb
+
+def _mm_counts_to_counts(MMcounts, maxMM=100):
+    '''
+    Take mm counts and return just counts
+    '''
+    counts = None
+    for mm, count in [(mm, count) for mm, count in MMcounts.items() if mm <= maxMM]:
+        if counts is None:
+            counts = count
+        else:
+            counts = np.add(counts, count)
+
+    if counts is None:
+        return np.zeros(4, dtype=int)
+
+    else:
+        return counts
+
+def _update_covT(covT, MMcounts, position):
+    '''
+    Update covT at this position
+    '''
+    for mm, count in MMcounts.items():
+        covT[mm][position] = sum(count)
+
+def run_up_NaN(odb, cols, on='scaffold'):
+    '''
+    Take NaN values and fill them with the column above.
+
+    For example, if you have mm of [0,1,2,3], and breadth of [.9, .92, NaN, .94],
+    change the breadth to [.9, .92, .92, .94]
+
+    If you have [0,1,2,3] and [NaN, NaN, .92, .94], it'll change it to:
+    [0, 0, .92, .94]
+
+    NOTE: Must be sorted / indexed in the order that you want run up
+
+    Args:
+        odb: original dataframe
+        cols: columns to do this filling on
+        on: the "key" of the dataframe. If this is all NaN, fill with 0s
+
+    Returns:
+        DataFrame: new dataframe
+    '''
+    Fdb = odb.copy()
+    for scaff, db in odb.groupby(on):
+        # handle edge case where all are NaN
+        if len(db[cols[0]].dropna()) == 0:
+            for i, row in db.iterrows():
+                for col in cols:
+                    Fdb.at[i, col] = 0
+            continue
+
+        # do the actual run-up
+        top = True
+        for i, row in db.iterrows():
+            # hangle edge case where top values are NaN
+            if top & np.isnan(row[cols[0]]):
+                for col in cols:
+                    Fdb.at[i, col] = 0
+                continue
+            else:
+                top = False
+
+            # The normal run-up case
+            if np.isnan(row['ANI']):
+                for col in cols:
+                    Fdb.at[i, col] = Fdb.at[i-1, col]
+
+    return Fdb
+
+
+def _merge_tables_special(Cdb, Adb):
+    FIX_COLS = ['ANI', 'SNPs', 'unmaskedBreadth']
+
+    # Handle edge-case where there are no SNPs
+    if len(Adb) == 0:
+        for c in FIX_COLS:
+            Cdb[c] = 0
+        return Cdb
+
+    # Make sure anything with a coverage has a SNP
+    assert len(set(Adb['mm']) - set(Cdb['mm'])) == 0
+
+    # Do initial merge
+    Cdb = pd.merge(Cdb, Adb, on=['scaffold', 'mm'], how='outer')
+    Cdb = Cdb.sort_values(['scaffold', 'mm'])
+    Cdb = Cdb.reset_index(drop=True)
+
+    # Run up NaN values. For example, in the cases
+    Fdb = run_up_NaN(Cdb, FIX_COLS, on='scaffold')
+
+    # Might as well adjust some datatypes
+    pass
+
+    return Fdb
 
 def profile_bam(bam, fasta, **kwargs):
     '''
@@ -235,36 +416,41 @@ def profile_bam(bam, fasta, **kwargs):
 
     # initialize
     table = defaultdict(list) # set up coverage dataframe
+    Atable = defaultdict(list) # set up ANI dataframe
     Stable = defaultdict(list) # Set up SNP table
+
     samfile = pysam.AlignmentFile(bam) # set up .sam file
+
     scaff2sequence = SeqIO.to_dict(SeqIO.parse(fasta, "fasta")) # set up .fasta file
     s2l = {s:len(scaff2sequence[s]) for s in list(scaff2sequence.keys())} # Get scaffold2length
 
     # Iterate scaffolds
     for scaff in tqdm(s2l, desc='Scaffolds processed'):
-        covs = [] # List of coverage values for this scaffold
-        basesCounted = 0 # Count of bases that got through to SNP calling
-        snpsCounted = 0 # Count of SNPs
+        covT = defaultdict(lambda:np.zeros(s2l[scaff], dtype=int)) # Dictionary of mm -> positional coverage
+        basesCounted = defaultdict(lambda:np.zeros(s2l[scaff], dtype=bool)) # Count of bases that got through to SNP calling
+        snpsCounted = defaultdict(int) # Count of SNPs
 
         for pileupcolumn in samfile.pileup(scaff):
             # Iterate reads at this position to figure out basecounts
-            counts = _get_base_counts(pileupcolumn)
+            # note: pileupcolumn.pos is 0-based
             MMcounts = _get_base_counts_mm(pileupcolumn)
-
-            covs.append(sum(counts)) # Determine coverage of this base (this one does NOT include N or indels)
+            _update_covT(covT, MMcounts, pileupcolumn.pos)
 
             # Call SNPs
-            snpsCounted, basesCounted = _update_snp_table(Stable, basesCounted,\
-                    snpsCounted, scaff2sequence[scaff][pileupcolumn.pos], counts,\
+            _update_snp_table_T(Stable, basesCounted,\
+                    snpsCounted, scaff2sequence[scaff][pileupcolumn.pos], MMcounts,\
                     pileupcolumn.pos, scaff, minC=minC, minP=minP)
 
         # Update coverage table
-        _update_cov_table(table, covs, s2l[scaff], scaff)
-        # Update SNP table
-        _update_snp_cov_table(table, snpsCounted, basesCounted, s2l[scaff])
+        _update_covT_table(table, covT, s2l[scaff], scaff)
+
+        # Update ANI table
+        _update_snp_covT_table(Atable, snpsCounted, basesCounted, s2l[scaff], \
+                scaff, covT, minC)
 
     # Make coverage table
-    Cdb = pd.DataFrame(table)
+    Cdb = _merge_tables_special(pd.DataFrame(table), pd.DataFrame(Atable))
+
     # Maks SNP table
     Sdb = _make_snp_table(Stable)
 
@@ -290,7 +476,7 @@ def _get_base_counts_mm(pileupcolumn):
     From a pileupcolumn object, return a dictionary of readMismatches ->
         list with the counts of [A, C, T, G]
     '''
-    table = defaultdict(lambda:[0,0,0,0])
+    table = defaultdict(lambda:np.zeros(4, int))
     for pileupread in pileupcolumn.pileups:
         if not pileupread.is_del and not pileupread.is_refskip:
             try:
