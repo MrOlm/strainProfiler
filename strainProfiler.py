@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import argparse
+import pickle
 import pysam
 import sys
 import os
@@ -14,8 +15,87 @@ from collections import defaultdict
 from tqdm import tqdm
 
 __author__ = "Matt Olm"
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 __license__ = "MIT"
+
+class SNVprofile(object):
+    '''
+    The class holds the profile of a single .fasta / .bam pair
+    '''
+
+    def __init__(self, **kwargs):
+        '''
+        initialize all attributes to None
+        '''
+
+        self.ATTRIBUTES = (\
+        'filename', # Filename of this object
+
+        'fasta_loc',
+        'scaffold2length',
+        'bam_loc',
+        'scaff2length' # Dictionary of scaffold 2 length
+
+        'raw_snp_table', # Contains raw SNP information on a mm level
+        'raw_ANI_table', # Contains raw ANI information on a mm level
+        'raw_coverage_table', # Contains raw coverage information on a mm level
+
+        'cumulative_scaffold_table', # Cumulative coverage on mm level. Formerly "scaffoldTable.csv"
+        'cumulative_snv_table', # Cumulative SNP on mm level. Formerly "snpLocations.pickle"
+        )
+        for att in self.ATTRIBUTES:
+            setattr(self, att, kwargs.get(att, None))
+
+    def __str__(self):
+        string = '\n'.join(["{0} - {1}".format(att, type(getattr(self, att)))\
+            for att in self.ATTRIBUTES])
+        return string
+
+    def store(self):
+        '''
+        Store self. MUST have the attribute "filename" set
+        '''
+        if self.filename is None:
+            print("Cant save this SNVprofile- no filename!")
+            return
+        elif self.filename[-7:] == '.pickle':
+            self.filename = self.filename[:-7]
+
+        f = open(self.filename + ".pickle", 'wb')
+        pickle.dump(self.__dict__, f, 2)
+        f.close()
+
+    def load(self, basename):
+        '''
+        Load self from the basename
+        '''
+        if basename[-7:] == '.pickle':
+            basename = basename[:-7]
+
+        #print("loading {0}".format(basename + '.pickle'))
+        f = open(basename + '.pickle', 'rb')
+        tmp_dict = pickle.load(f)
+        f.close()
+
+        self.__dict__.clear()
+        self.__dict__.update(tmp_dict)
+
+        return self
+
+    def make_cumulative_tables(self):
+        '''
+        Make cumulative tables (still raw-looking)
+
+        This is all on the scaffold level
+        '''
+        if ((self.raw_coverage_table is not None)
+                & (self.raw_ANI_table is not None)):
+            self.cumulative_scaffold_table = \
+                _merge_tables_special(self.raw_coverage_table, self.raw_ANI_table)
+
+        if (self.raw_snp_table is not None):
+            self.cumulative_snv_table = _make_snp_table(self.raw_snp_table)
+            self.cumulative_snv_table = _parse_Sdb(self.cumulative_snv_table)
 
 class Controller():
     '''
@@ -30,18 +110,25 @@ class Controller():
         bam = self.prepare_bam_file(args)
 
         # get all the information possible on all scaffolds
-        Bdb, Sdb = profile_bam(bam, **args)
-
-        # Parse Sdb a little bit
-        Sdb = _parse_Sdb(Sdb)
-
-        # Add the .stb information if requested
-        if args.get('stb', None) != None:
-            print("stb files are not supported yet- bug Matt about this if you want this feature!")
-            pass
+        Sprofile = profile_bam(bam, **args)
 
         # output
-        self.write_output(Bdb, Sdb, args)
+        self.write_output(Sprofile, args)
+
+        # Bdb, Sdb = profile_bam(bam, **args)
+        #
+        # # Parse Sdb a little bit
+        # Sdb = _parse_Sdb(Sdb)
+        #
+        # # Add the .stb information if requested
+        # if args.get('stb', None) != None:
+        #     print("stb files are not supported yet- bug Matt about this if you want this feature!")
+        #     pass
+        #
+        # output
+        # Sprofile.filename = args.get('o')
+        # Sprofile.store()
+        #self.write_output(Bdb, Sdb, args)
 
     def prepare_bam_file(self, args):
         '''
@@ -70,11 +157,15 @@ class Controller():
             sys.exit()
         return bam
 
-    def write_output(self, Bdb, Sdb, args):
+    def write_output(self, Sprofile, args):
         '''
         Write output files
         '''
         out_base = args.get('o')
+
+        # Write the Sprofile
+        Sprofile.filename = args.get('o')
+        Sprofile.store()
 
         # Write a log file
         with open(out_base + '_log', 'w') as o:
@@ -83,9 +174,11 @@ class Controller():
                 o.write("{0}\t{1}\n".format(a, args[a]))
 
         # Write the scaffold-level profile
-        Bdb.to_csv(out_base + '_scaffoldTable.csv', index=False)
+        Sprofile.cumulative_scaffold_table.to_csv(
+                out_base + '_scaffoldTable.csv', index=False)
 
         # Write the SNPs if they exist
+        Sdb = Sprofile.cumulative_snv_table
         if len(Sdb) == 0:
             pass
         else:
@@ -298,7 +391,7 @@ def _update_snp_covT_table(table, snpsCounted, basesCounted, lengt, scaff, covT,
             table['ANI'].append((counted_bases - counted_snps)/ counted_bases)
 
 def _make_snp_table(Stable):
-    if Stable != False:
+    if Stable is not False:
         try:
             Sdb = pd.DataFrame(Stable)
             Sdb['scaffold'] = Sdb['scaffold'].astype('category')
@@ -461,13 +554,25 @@ def profile_bam(bam, fasta, **kwargs):
         _update_snp_covT_table(Atable, snpsCounted, basesCounted, s2l[scaff], \
                 scaff, covT, minC)
 
-    # Make coverage table
-    Cdb = _merge_tables_special(pd.DataFrame(table), pd.DataFrame(Atable))
+    # Make the profile
+    Sprofile = SNVprofile(
+        fasta_loc=fasta,
+        bam_loc=bam,
 
-    # Maks SNP table
-    Sdb = _make_snp_table(Stable)
+        minP=minP,
+        minC=minC,
 
-    return Cdb, Sdb
+        scaff2length=s2l,
+
+        raw_coverage_table=pd.DataFrame(table),
+        raw_ANI_table=pd.DataFrame(Atable),
+        raw_snp_table=_make_snp_table(Stable),
+        )
+
+    # Make the tables
+    Sprofile.make_cumulative_tables()
+
+    return Sprofile
 
 P2C = {'A':0, 'C':1, 'T':2, 'G':3}
 def _get_base_counts(pileupcolumn):

@@ -4,14 +4,19 @@ Run tests of strainProfiler
 '''
 
 import os
+import sys
 import glob
 import shutil
+import pickle
 
 import warnings
 warnings.filterwarnings("ignore")
 
 import pandas as pd
 from subprocess import call
+
+sys.path.insert(1, "..")
+import strainProfiler
 
 def load_data_loc():
     return os.path.join(str(os.getcwd()), \
@@ -68,9 +73,13 @@ class test_strainProfiler_pile():
         self.test3()
         self.tearDown()
 
-        # self.setUp()
-        # self.test4()
-        # self.tearDown()
+        self.setUp()
+        self.test4()
+        self.tearDown()
+
+        self.setUp()
+        self.test5()
+        self.tearDown()
 
     def test0(self):
         '''
@@ -260,6 +269,27 @@ class test_strainProfiler_pile():
 
         print(Odb)
 
+    def test5(self):
+        '''
+        Test some SNVprofile object stuff
+        '''
+        # Run program
+        fasta = load_data_loc() + 'N5_271_010G1_scaffold_1.fasta'
+        out_base = os.path.join(self.test_dir, 'test')
+        cmd = [self.script, '-b', self.bam, '-o', out_base, '-f', fasta]
+        call(cmd)
+
+        # Load object
+        Sprofile = strainProfiler.SNVprofile().load(out_base)
+
+        # Load scaffold table
+        Odb = Sprofile.cumulative_scaffold_table
+        _internal_verify_Sdb(Odb)
+
+        # Load SNP table
+        Sdb = Sprofile.cumulative_snv_table
+        _internal_verify_OdbSdb(Odb, Sdb)
+
 def _internal_verify_Sdb(Sdb):
     assert len(Sdb) == len(Sdb.dropna())
 
@@ -270,6 +300,21 @@ def _internal_verify_Sdb(Sdb):
     assert Sdb['ANI'].max() <= 1
     assert Sdb['unmaskedBreadth'].max() <= 1
     assert Sdb['breadth'].max() <= 1
+
+def _internal_verify_OdbSdb(Odb, Sdb):
+    # Ensure internal consistancy between Sdb and Cdb at the lowest mm
+    low_mm = Sdb['mm'].min()
+    for scaff, db in Sdb[Sdb['mm'] == low_mm].groupby('scaffold'):
+        snps = Odb['SNPs'][(Odb['scaffold'] == scaff) & (Odb['mm'] \
+                == low_mm)].fillna(0).tolist()[0]
+        assert snps == len(db), [snps, len(db)]
+
+    # Ensure internal consistancy between Sdb and Cdb at the highset mm
+    odb = Odb.sort_values('mm').drop_duplicates(subset='scaffold', keep='last')
+    for scaff, db in Sdb.sort_values('mm').drop_duplicates(subset=['scaffold'\
+                    ,'position'], keep='last').groupby('scaffold'):
+        snps = odb['SNPs'][(odb['scaffold'] == scaff)].fillna(0).tolist()[0]
+        assert snps == len(db), [snps, len(db)]
 
 class test_strainProfiler_breadth():
     def setUp(self):
