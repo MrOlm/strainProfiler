@@ -15,7 +15,7 @@ from collections import defaultdict
 from tqdm import tqdm
 
 __author__ = "Matt Olm"
-__version__ = "0.2.3"
+__version__ = "0.3.0"
 __license__ = "MIT"
 
 class SNVprofile(object):
@@ -32,9 +32,8 @@ class SNVprofile(object):
         'filename', # Filename of this object
 
         'fasta_loc',
-        'scaffold2length',
+        'scaffold2length', # Dictionary of scaffold 2 length
         'bam_loc',
-        'scaff2length' # Dictionary of scaffold 2 length
 
         'raw_snp_table', # Contains raw SNP information on a mm level
         'raw_ANI_table', # Contains raw ANI information on a mm level
@@ -42,9 +41,14 @@ class SNVprofile(object):
 
         'cumulative_scaffold_table', # Cumulative coverage on mm level. Formerly "scaffoldTable.csv"
         'cumulative_snv_table', # Cumulative SNP on mm level. Formerly "snpLocations.pickle"
+
+        'scaff2covT',
+        'scaff2basesCounted',
+        'scaff2snpsCounted',
         )
         for att in self.ATTRIBUTES:
             setattr(self, att, kwargs.get(att, None))
+        self.version = __version__
 
     def __str__(self):
         string = '\n'.join(["{0} - {1}".format(att, type(getattr(self, att)))\
@@ -162,27 +166,29 @@ class Controller():
         Write output files
         '''
         out_base = args.get('o')
+        onlyPickle = args.get('onlyPickle')
 
         # Write the Sprofile
         Sprofile.filename = args.get('o')
         Sprofile.store()
 
-        # Write a log file
-        with open(out_base + '_log', 'w') as o:
-            o.write("strainProfiler verion {0}\n".format(__version__))
-            for a in args.keys():
-                o.write("{0}\t{1}\n".format(a, args[a]))
+        if not onlyPickle:
+            # Write a log file
+            with open(out_base + '_log', 'w') as o:
+                o.write("strainProfiler verion {0}\n".format(__version__))
+                for a in args.keys():
+                    o.write("{0}\t{1}\n".format(a, args[a]))
 
-        # Write the scaffold-level profile
-        Sprofile.cumulative_scaffold_table.to_csv(
-                out_base + '_scaffoldTable.csv', index=False)
+            # Write the scaffold-level profile
+            Sprofile.cumulative_scaffold_table.to_csv(
+                    out_base + '_scaffoldTable.csv', index=False)
 
-        # Write the SNPs if they exist
-        Sdb = Sprofile.cumulative_snv_table
-        if len(Sdb) == 0:
-            pass
-        else:
-            Sdb.to_pickle(out_base + '_snpLocations.pickle')
+            # Write the SNPs if they exist
+            Sdb = Sprofile.cumulative_snv_table
+            if len(Sdb) == 0:
+                pass
+            else:
+                Sdb.to_pickle(out_base + '_snpLocations.pickle')
 
 def _sam_to_bam(sam):
     '''
@@ -513,6 +519,7 @@ def profile_bam(bam, fasta, **kwargs):
     # get arguments
     minP = kwargs.get('minP', .8)
     minC = kwargs.get('minC', 5)
+    lightRAM = kwargs.get('lightRAM', False)
 
     # initialize
     table = defaultdict(list) # set up coverage dataframe
@@ -523,6 +530,12 @@ def profile_bam(bam, fasta, **kwargs):
 
     scaff2sequence = SeqIO.to_dict(SeqIO.parse(fasta, "fasta")) # set up .fasta file
     s2l = {s:len(scaff2sequence[s]) for s in list(scaff2sequence.keys())} # Get scaffold2length
+
+    # initialize new goodies on the scaffold level
+    if not lightRAM:
+        scaff2covT = {}
+        scaff2basesCounted = {}
+        scaff2snpsCounted = {}
 
     # Iterate scaffolds
     for scaff in tqdm(s2l, desc='Scaffolds processed'):
@@ -554,6 +567,12 @@ def profile_bam(bam, fasta, **kwargs):
         _update_snp_covT_table(Atable, snpsCounted, basesCounted, s2l[scaff], \
                 scaff, covT, minC)
 
+        # Add to dicts
+        if not lightRAM:
+            scaff2covT[scaff] = dict(covT)
+            scaff2basesCounted[scaff] = dict(basesCounted)
+            scaff2snpsCounted[scaff] = dict(snpsCounted)
+
     # Make the profile
     Sprofile = SNVprofile(
         fasta_loc=fasta,
@@ -562,12 +581,17 @@ def profile_bam(bam, fasta, **kwargs):
         minP=minP,
         minC=minC,
 
-        scaff2length=s2l,
+        scaffold2length=s2l,
 
         raw_coverage_table=pd.DataFrame(table),
         raw_ANI_table=pd.DataFrame(Atable),
         raw_snp_table=_make_snp_table(Stable),
         )
+
+    if not lightRAM:
+        # Add the extra weight
+        for att in ['scaff2covT', 'scaff2basesCounted', 'scaff2snpsCounted']:
+            setattr(Sprofile, att, eval(att))
 
     # Make the tables
     Sprofile.make_cumulative_tables()
@@ -656,30 +680,36 @@ def parse_args(args):
             formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     InpArgs = parser.add_argument_group('INPUTS')
-    InpArgs.add_argument(\
-            '-b', action = 'store', \
+    InpArgs.add_argument(
+            '-b', action = 'store',
             help = 'bam file')
-    InpArgs.add_argument(\
-            '-s', action = 'store', \
+    InpArgs.add_argument(
+            '-s', action = 'store',
             help = 'sam file (will convert to bam before running)')
-    InpArgs.add_argument(\
-            '-g','--stb', action = 'store', \
+    InpArgs.add_argument(
+            '-g','--stb', action = 'store',
             help = 'scaffold to bin file (to run on whole-genome level)')
-    InpArgs.add_argument(\
-            '-f', '--fasta', action = 'store', \
+    InpArgs.add_argument(
+            '-f', '--fasta', action = 'store',
             help = 'fasta file (required for ANI profiling)')
 
     OptArgs = parser.add_argument_group('OPTIONS')
-    OptArgs.add_argument(\
-            '-p', '--minP', default=.8, type=float,\
+    OptArgs.add_argument(
+            '-p', '--minP', default=.8, type=float,
             help = 'If reference base has less than this fraction of support, call SNP')
-    OptArgs.add_argument(\
-            '-c', '--minC', default=5, type=int,\
+    OptArgs.add_argument(
+            '-c', '--minC', default=5, type=int,
             help = 'Minumum coverage to call SNPs')
+    OptArgs.add_argument(
+            '--lightRAM', default=False, action='store_true',
+            help = 'Dont store extra information in the pickle file')
+    OptArgs.add_argument(
+            '--onlyPickle', default=False, action='store_true',
+            help = 'Just store the pickle file, nothing else')
 
     OutArgs = parser.add_argument_group('OUTPUTS')
-    OutArgs.add_argument(\
-            '-o', action = 'store', default='strainProfile',\
+    OutArgs.add_argument(
+            '-o', action = 'store', default='strainProfile',
             help = 'output base name')
 
     return vars(parser.parse_args(args))

@@ -64,7 +64,7 @@ class test_strainProfiler_pile():
         self.setUp()
         self.test1()
         self.tearDown()
-
+        #
         self.setUp()
         self.test2()
         self.tearDown()
@@ -146,19 +146,11 @@ class test_strainProfiler_pile():
 
         _internal_verify_Sdb(Odb)
 
-        # Ensure internal consistancy between Sdb and Cdb at the lowest mm
-        low_mm = Sdb['mm'].min()
-        for scaff, db in Sdb[Sdb['mm'] == low_mm].groupby('scaffold'):
-            snps = Odb['SNPs'][(Odb['scaffold'] == scaff) & (Odb['mm'] \
-                    == low_mm)].fillna(0).tolist()[0]
-            assert snps == len(db), [snps, len(db)]
+        _internal_verify_OdbSdb(Odb, Sdb)
 
-        # Ensure internal consistancy between Sdb and Cdb at the highset mm
-        odb = Odb.sort_values('mm').drop_duplicates(subset='scaffold', keep='last')
-        for scaff, db in Sdb.sort_values('mm').drop_duplicates(subset=['scaffold'\
-                        ,'position'], keep='last').groupby('scaffold'):
-            snps = odb['SNPs'][(odb['scaffold'] == scaff)].fillna(0).tolist()[0]
-            assert snps == len(db), [snps, len(db)]
+        # Print size
+        size = os.path.getsize(out_base + '.pickle') / (1024*1024.0)
+        print("pickle is {0:.2f}Mb".format(size))
 
         # Compare to calculate_coverage
         Cdb = pd.read_csv(self.cc_solution)
@@ -267,13 +259,13 @@ class test_strainProfiler_pile():
         assert not os.path.exists(out_base + '_snpLocations.pickle')
         assert os.path.isfile(out_base + '_log')
 
-        print(Odb)
+        _internal_verify_Sdb(Odb)
 
     def test5(self):
         '''
         Test some SNVprofile object stuff
         '''
-        # Run program
+        # Run program normally
         fasta = load_data_loc() + 'N5_271_010G1_scaffold_1.fasta'
         out_base = os.path.join(self.test_dir, 'test')
         cmd = [self.script, '-b', self.bam, '-o', out_base, '-f', fasta]
@@ -289,6 +281,45 @@ class test_strainProfiler_pile():
         # Load SNP table
         Sdb = Sprofile.cumulative_snv_table
         _internal_verify_OdbSdb(Odb, Sdb)
+
+        # Print size
+        sizeO = os.path.getsize(out_base + '.pickle') / (1024*1024.0)
+        #print("pickle is {0:.2f}Mb".format(sizeO))
+
+        # Test lightRAM function
+        out_base = out_base + '.lr'
+        cmd = [self.script, '-b', self.bam, '-o', out_base , '-f', fasta,\
+            '--lightRAM']
+        call(cmd)
+
+        # Make sure OK
+        Sprofile = strainProfiler.SNVprofile().load(out_base)
+        Odb = Sprofile.cumulative_scaffold_table
+        _internal_verify_Sdb(Odb)
+        Sdb = Sprofile.cumulative_snv_table
+        _internal_verify_OdbSdb(Odb, Sdb)
+
+        # Make sure smaller
+        sizeL = os.path.getsize(out_base + '.pickle') / (1024*1024.0)
+        assert sizeO > sizeL
+
+        # Test onlyPickle function
+        out_base = out_base + '.op'
+        cmd = [self.script, '-b', self.bam, '-o', out_base , '-f', fasta,\
+            '--onlyPickle']
+        call(cmd)
+
+        # Make sure OK
+        Sprofile = strainProfiler.SNVprofile().load(out_base)
+        Odb = Sprofile.cumulative_scaffold_table
+        _internal_verify_Sdb(Odb)
+        Sdb = Sprofile.cumulative_snv_table
+        _internal_verify_OdbSdb(Odb, Sdb)
+
+        # Make sure only pickle
+        assert not os.path.exists(out_base + '_scaffoldTable.csv')
+        assert not os.path.exists(out_base + '_snpLocations.pickle')
+        assert not os.path.exists(out_base + '_log')
 
 def _internal_verify_Sdb(Sdb):
     assert len(Sdb) == len(Sdb.dropna())
