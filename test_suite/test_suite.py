@@ -68,6 +68,10 @@ class test_strainProfiler_pile():
         self.test3()
         self.tearDown()
 
+        # self.setUp()
+        # self.test4()
+        # self.tearDown()
+
     def test0(self):
         '''
         SUPER FAST basic comprehensive test of values; just one scaffold
@@ -133,15 +137,18 @@ class test_strainProfiler_pile():
 
         _internal_verify_Sdb(Odb)
 
-        # Make sure all scaffolds are there for each mm
-        times = list(dict(Odb['scaffold'].value_counts()).values())
-        assert len(set(times)) == 1, set(times)
-
-        # Ensure internal consistancy between Sdb and Cdb
+        # Ensure internal consistancy between Sdb and Cdb at the lowest mm
         low_mm = Sdb['mm'].min()
         for scaff, db in Sdb[Sdb['mm'] == low_mm].groupby('scaffold'):
             snps = Odb['SNPs'][(Odb['scaffold'] == scaff) & (Odb['mm'] \
                     == low_mm)].fillna(0).tolist()[0]
+            assert snps == len(db), [snps, len(db)]
+
+        # Ensure internal consistancy between Sdb and Cdb at the highset mm
+        odb = Odb.sort_values('mm').drop_duplicates(subset='scaffold', keep='last')
+        for scaff, db in Sdb.sort_values('mm').drop_duplicates(subset=['scaffold'\
+                        ,'position'], keep='last').groupby('scaffold'):
+            snps = odb['SNPs'][(odb['scaffold'] == scaff)].fillna(0).tolist()[0]
             assert snps == len(db), [snps, len(db)]
 
         # Compare to calculate_coverage
@@ -235,6 +242,23 @@ class test_strainProfiler_pile():
                 continue
             assert (db['ANI'].tolist()[0] - s2a[scaff]) <= .0, \
                 [scaff, db['ANI'].tolist()[0], s2a[scaff]]
+
+    def test4(self):
+        '''
+        Test the case where a scaffold is not preset at all in the .bam file
+        '''
+        # Run program
+        out_base = os.path.join(self.test_dir, 'test')
+        cmd = [self.script, '-b', self.bam, '-o', out_base, '-f', load_data_loc() + \
+            'N5_271_010G1_scaffold_101_extra.fasta']
+        call(cmd)
+
+        # Load output
+        Odb = pd.read_csv(out_base + '_scaffoldTable.csv')
+        assert not os.path.exists(out_base + '_snpLocations.pickle')
+        assert os.path.isfile(out_base + '_log')
+
+        print(Odb)
 
 def _internal_verify_Sdb(Sdb):
     assert len(Sdb) == len(Sdb.dropna())

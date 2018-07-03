@@ -14,7 +14,7 @@ from collections import defaultdict
 from tqdm import tqdm
 
 __author__ = "Matt Olm"
-__version__ = "0.2.0"
+__version__ = "0.2.2"
 __license__ = "MIT"
 
 class Controller():
@@ -216,7 +216,7 @@ def _update_covT_table(table, covT, lengt, scaff, debug=False):
 def _update_snp_table_T(Stable, basesCounted, snpsCounted, refBase, MMcounts,\
         pos, scaff, minC=5, minP=.8):
     '''
-    Add information to SNP table
+    Add information to SNP table. Update basesCounted and snpsCounted
     '''
     x = _mm_counts_to_counts(MMcounts)
     #print("inner type: {0}".format(type(x)))
@@ -242,12 +242,17 @@ def _update_snp_table_T(Stable, basesCounted, snpsCounted, refBase, MMcounts,\
                Stable[b].append(c)
            Stable['mm'].append(mm)
 
-           snpsCounted[mm] += 1
+           snpsCounted[mm][pos] = True
 
         #print("{0} is True".format(pos))
         basesCounted[mm][pos] = True # count everything that's not skipped
 
 def _calc_counted_bases(basesCounted, maxMM):
+    '''
+    Return the number of bases counted at a particular mm level
+
+    Returns the number of bases at this level and all levels below it
+    '''
     counts = None
     for mm, count in [(mm, count) for mm, count in basesCounted.items() if mm <= maxMM]:
         if counts is None:
@@ -263,6 +268,9 @@ def _calc_counted_bases(basesCounted, maxMM):
 
 def _update_snp_covT_table(table, snpsCounted, basesCounted, lengt, scaff, covT,
             minCov):
+    '''
+    Fill in the SNP table with the SNPs and unmaskedBreadth for each scaffold and mm
+    '''
     # fill in all SNP information
     for mm in sorted(list(covT.keys())):
         covs = _mm_counts_to_counts(covT, mm)
@@ -272,8 +280,7 @@ def _update_snp_covT_table(table, snpsCounted, basesCounted, lengt, scaff, covT,
             zeros = (covs < minCov).sum()
             counted_basesO = lengt - zeros
 
-        counted_snps = sum([snpsCounted[m] for m in list(snpsCounted.keys())\
-            if m <= mm])
+        counted_snps = _calc_counted_bases(snpsCounted, mm)
         counted_bases = _calc_counted_bases(basesCounted, mm)
 
         # print(basesCounted[mm])
@@ -428,9 +435,15 @@ def profile_bam(bam, fasta, **kwargs):
     for scaff in tqdm(s2l, desc='Scaffolds processed'):
         covT = defaultdict(lambda:np.zeros(s2l[scaff], dtype=int)) # Dictionary of mm -> positional coverage
         basesCounted = defaultdict(lambda:np.zeros(s2l[scaff], dtype=bool)) # Count of bases that got through to SNP calling
-        snpsCounted = defaultdict(int) # Count of SNPs
+        snpsCounted = defaultdict(lambda:np.zeros(s2l[scaff], dtype=bool)) # Count of SNPs
 
-        for pileupcolumn in samfile.pileup(scaff):
+        try:
+            iter = samfile.pileup(scaff)
+        except ValueError:
+            print("scaffold {0} is not in the .bam file {1}!".format(scaff, bam))
+            continue
+
+        for pileupcolumn in iter:
             # Iterate reads at this position to figure out basecounts
             # note: pileupcolumn.pos is 0-based
             MMcounts = _get_base_counts_mm(pileupcolumn)
