@@ -154,8 +154,3 @@ Subsetting to only the highest level of mismatches
 ```python
 tdb = Tdb.sort_values('mm').drop_duplicates(subset=['genome', 'sample'], keep='last')
 ```
-
-Notebooks where I do this stuff:
-
-*https://biotite.berkeley.edu/j/user/mattolm/notebooks/Infant_Eukaryotes/PublicationQuality/ControlEuks_4_removeContaminants_3.ipynb
-*https://biotite.berkeley.edu/j/user/mattolm/notebooks/Infant_Eukaryotes/PublicationQuality/ControlEuks_2_Malassazia_5_strainProfilerv3_circos.ipynb
